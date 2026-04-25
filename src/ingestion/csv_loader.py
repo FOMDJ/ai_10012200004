@@ -80,9 +80,66 @@ def to_documents(df: pd.DataFrame) -> List[Dict[str, Any]]:
     return docs
 
 
+def _national_summaries(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Add one national-total summary document per election year."""
+    docs = []
+    df2 = df.copy()
+    # normalise column names for aggregation
+    vote_col = next((c for c in df2.columns if "vote" in c and "%" not in c), None)
+    year_col  = next((c for c in df2.columns if "year" in c), None)
+    party_col = next((c for c in df2.columns if "party" in c), None)
+    cand_col  = next((c for c in df2.columns if "candidate" in c), None)
+    if not all([vote_col, year_col, party_col, cand_col]):
+        return docs
+
+    df2[vote_col] = pd.to_numeric(df2[vote_col], errors="coerce")
+    totals = (
+        df2.groupby([year_col, party_col, cand_col])[vote_col]
+        .sum()
+        .reset_index()
+        .sort_values([year_col, vote_col], ascending=[True, False])
+    )
+
+    # Known winners (handles 2008 run-off which CSV first-round data misrepresents)
+    known_winners = {
+        1992: "Jerry John Rawlings", 1996: "J. J. Rawlings",
+        2000: "J. A. Kuffour",       2004: "J. A. Kuffour",
+        2008: "J. A Mills",          2012: "John Dramani Mahama",
+        2016: "Nana Akufo Addo",     2020: "Nana Akufo Addo",
+    }
+
+    for year, grp in totals.groupby(year_col):
+        rows = grp.reset_index(drop=True)
+        winner_name = known_winners.get(int(year))
+        if winner_name:
+            winner_row = rows[rows[cand_col].str.contains(winner_name.split()[0], case=False, na=False)]
+            if winner_row.empty:
+                winner_row = rows.iloc[[0]]
+        else:
+            winner_row = rows.iloc[[0]]
+
+        winner = winner_row.iloc[0]
+        lines = [
+            f"In the {year} Ghana presidential election, {winner[cand_col]} of the "
+            f"{winner[party_col]} party won the election nationally with "
+            f"{int(winner[vote_col]):,} total votes."
+        ]
+        # Add all candidates' national totals
+        for _, r in rows.iterrows():
+            lines.append(
+                f"{r[cand_col]} ({r[party_col]}) received {int(r[vote_col]):,} total votes nationwide in {year}."
+            )
+        text = " ".join(lines)
+        docs.append({
+            "text": text,
+            "metadata": {"source": "election", "year": int(year), "summary": True},
+        })
+    return docs
+
+
 def load_election_documents(path: str = RAW_CSV) -> List[Dict[str, Any]]:
     df = load_and_clean(path)
-    return to_documents(df)
+    return to_documents(df) + _national_summaries(df)
 
 
 if __name__ == "__main__":
